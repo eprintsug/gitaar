@@ -1,0 +1,116 @@
+#!/usr/bin/perl -w 
+
+use FindBin;
+use lib "$FindBin::Bin/../perl_lib";
+
+=pod
+
+=for Pod2Wiki
+
+=head1 NAME
+
+gitaar - create 'stub' .epmi so that tools/epm can be used (useful for developing/deploying git-based bazaar modules)
+
+=head1 SYNOPSIS
+
+gitaar I<repoid> I<epmid> [B<options>]
+
+=head1 OPTIONS
+
+=over 4
+
+=item --verbose
+
+=item --force
+
+=item --help
+
+=item --man
+
+=back
+
+=cut
+
+use EPrints;
+use Getopt::Long;
+use Pod::Usage;
+
+use strict;
+
+my $opt_verbose = 0;
+my $opt_force = 0;
+my $opt_help;
+my $opt_man;
+
+GetOptions(
+	'verbose+' => \$opt_verbose,
+	'force' => \$opt_force,
+	'help' => \$opt_help,
+	'man' => \$opt_man,
+) or pod2usage( 2 );
+
+pod2usage(-verbose => 1) if $opt_help;
+pod2usage(-verbose => 2) if $opt_man;
+
+pod2usage( 2 ) if !@ARGV || scalar @ARGV != 2;
+
+my $repoid = $ARGV[0];
+my $repo = EPrints->repository( $repoid );
+if( !defined $repo )
+{
+	die "'$repoid' is not a valid repository identifier";
+}
+
+# check $epmid is valid
+my $epmid = $ARGV[1];
+my $epm_dir = $repo->config( "base_path" ) . "/lib/epm/$epmid";
+unless( -d $epm_dir )
+{
+	die "Could not find $epm_dir";
+}
+
+# check epmi doesn't already exist
+my $epm_file = "$epm_dir/$epmid.epmi";
+if( -e $epm_file && !$opt_force )
+{
+	die "$epm_file already exists, use --force to overwrite";
+}
+
+my $epdata = {
+	epmid => $epmid,
+	datestamp => EPrints::Time::iso_datetime(),
+	version => "1.0.0",
+};
+
+my $REGEXP_ANY = '^.*$';
+
+my $epm = $repo->dataset( "epm" )->dataobj( $epmid );
+for( qw( version controller ) )
+{
+	if( defined $epm && $epm->is_set( $_ ) )
+	{
+		$epdata->{$_} = $epm->value( $_ );
+	}
+	$epdata->{$_} = EPrints::Utils::get_input( $REGEXP_ANY, $_, $epdata->{$_} );
+}
+
+for( keys %$epdata )
+{
+	delete $epdata->{$_} unless defined $epdata->{$_};
+}
+
+$epm = EPrints::DataObj::EPM->new_from_data( $repo, $epdata, $repo->dataset( "epm" ) );
+die "Could not create DataObj::EPM for $epmid" unless defined $epm;
+
+# create epmi stub
+if( open( my $fh, ">$epm_file" ) )
+{
+	$epm->serialise( $fh );
+	close($fh);
+}
+
+if( $opt_verbose )
+{
+	print "Wrote $epm_file\n";
+	$epm->serialise( *STDOUT );
+}
