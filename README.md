@@ -4,6 +4,11 @@ gitaar
 Build and publish EPrints Package Manager (EPM) packages from the command line.
 
 ````
+# install gitaar
+$ cd /opt/eprints3
+$ git submodule add git@github.com:eprintsug/gitaar.git
+
+# pull in git-hosted package
 $ cd /opt/eprints3/lib/epm
 $ git submodule add git@github.com:eprintsug/bootstrap.git
 
