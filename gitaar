@@ -5,112 +5,269 @@ use lib "$FindBin::Bin/../perl_lib";
 
 =pod
 
-=for Pod2Wiki
-
 =head1 NAME
 
-gitaar - create 'stub' .epmi so that tools/epm can be used (useful for developing/deploying git-based bazaar modules)
+gitaar - build and publish (git-based) EPM packages from the command line
 
 =head1 SYNOPSIS
 
-gitaar I<repoid> I<epmid> [B<options>]
+gitaar I<command> I<repo_id> I<epm_id>
 
-=head1 OPTIONS
+Where I<command> is one of:
 
-=over 4
-
-=item --verbose
-
-=item --force
-
-=item --help
-
-=item --man
-
-=back
+	build_epmi
+	build_epm
+	publish
 
 =cut
 
 use EPrints;
-use Getopt::Long;
+use File::Basename;
+use File::Find;
 use Pod::Usage;
-
 use strict;
 
-my $opt_verbose = 0;
-my $opt_force = 0;
-my $opt_help;
-my $opt_man;
+pod2usage( 2 ) if !@ARGV;
+my $cmd = shift @ARGV;
+my $f = "action_$cmd";
+if( !defined &$f )
+{
+	pod2usage( "Unknown or unsupported command '$cmd'" );
+}
 
-GetOptions(
-	'verbose+' => \$opt_verbose,
-	'force' => \$opt_force,
-	'help' => \$opt_help,
-	'man' => \$opt_man,
-) or pod2usage( 2 );
+pod2usage( 2 ) if @ARGV < 2;
+my( $repoid, $epmid ) = @ARGV;
 
-pod2usage(-verbose => 1) if $opt_help;
-pod2usage(-verbose => 2) if $opt_man;
-
-pod2usage( 2 ) if !@ARGV || scalar @ARGV != 2;
-
-my $repoid = $ARGV[0];
-my $repo = EPrints->repository( $repoid );
+my $repo = EPrints::Repository->new($repoid);
 if( !defined $repo )
 {
 	die "'$repoid' is not a valid repository identifier";
 }
 
-# check $epmid is valid
-my $epmid = $ARGV[1];
-my $epm_dir = $repo->config( "base_path" ) . "/lib/epm/$epmid";
-unless( -d $epm_dir )
+my $LIB_PATH = $repo->config( "base_path" ) . "/lib";
+my $EPM_PATH = "$LIB_PATH/epm/$epmid";
+if( !-d $EPM_PATH )
 {
-	die "Could not find $epm_dir";
+	die "'$epmid' is not a valid epm identifier - $EPM_PATH does not exist";
 }
-
-# check epmi doesn't already exist
-my $epm_file = "$epm_dir/$epmid.epmi";
-if( -e $epm_file && !$opt_force )
-{
-	die "$epm_file already exists, use --force to overwrite";
-}
-
-my $epdata = {
-	epmid => $epmid,
-	datestamp => EPrints::Time::iso_datetime(),
-	version => "1.0.0",
-};
 
 my $REGEXP_ANY = '^.*$';
 
-my $epm = $repo->dataset( "epm" )->dataobj( $epmid );
-for( qw( version controller ) )
+my %STUB = (
+	version => "1.0.0",
+	creators => [
+		{
+			name => {
+				given => "Your",
+				family => "Name",
+			},
+			id => "you\@email.address",
+		}	
+	],
+	title => "Your Project",
+	description => "This is the description.",
+	requirements => "The following modules are required: X, Y, Z",
+	home_page => "http://github.com/your/project",
+);
+
 {
-	if( defined $epm && $epm->is_set( $_ ) )
+	no strict "refs";
+	&$f( $repo, $epmid );
+}
+
+sub action_build_epmi
+{
+	my ($repo,$id) = @_;
+
+	my $epdata = \%STUB;
+	my $created = 1;
+
+	# read epmi - if doesn't exist create new one using %STUB
+	my $epm = EPrints::DataObj::EPM->new($repo, $id);
+	if(defined $epm)
 	{
-		$epdata->{$_} = $epm->value( $_ );
+		$epdata = $epm->get_data;
+		$created = 0;
 	}
-	$epdata->{$_} = EPrints::Utils::get_input( $REGEXP_ANY, $_, $epdata->{$_} );
+
+	delete $epdata->{documents};
+	$epdata->{epmid} = $id;
+	$epdata->{datestamp} = EPrints::Time::iso_datetime();
+
+	# let user interactively update a few fields
+	print "\nPlease enter some information about this package:\n\n";
+	for(qw(title version controller))
+	{
+		$epdata->{$_} = EPrints::Utils::get_input( $REGEXP_ANY, $_, $epdata->{$_});
+	}
+		
+	$epm = EPrints::DataObj::EPM->new_from_data($repo, $epdata);
+
+	# read files from $EPM_PATH
+	my @manifest;
+	find(sub{push @manifest, $File::Find::name if $File::Find::dir ne $EPM_PATH && -f $_}, $EPM_PATH);
+
+	my $install = $repo->dataset( "document" )->make_dataobj({
+		_parent => $epm,
+		content => "install",
+		format => "other",
+		files => [],
+	});
+	$epm->set_value( "documents", [ $install ]);
+
+	foreach my $filename (sort @manifest)
+	{
+		use bytes;
+		open(my $fh, "<", $filename) or die "Error opening $filename: $!";
+		sysread($fh, my $data, -s $fh);
+		close($fh);
+		my $md5 = Digest::MD5::md5_hex( $data );
+	
+		$repo->run_trigger( EPrints::Const::EP_TRIGGER_MEDIA_INFO,
+			filename => basename($filename),
+			filepath => $filename,
+			epdata => my $media_info = {},
+		);
+
+		my $copy = { pluginid => "Storage::EPM", sourceid => $filename };
+
+		# fixup filename
+		my $epmfilename = $filename;
+		unless( $epmfilename =~ s|$EPM_PATH/lib/|| )
+		{
+			$epmfilename =~ s|$LIB_PATH/||;
+		}
+
+		my $file = $repo->dataset( "file" )->make_dataobj({
+			_parent => $install,
+			datasetid => "document",
+			filename => $epmfilename,
+			filesize => length($data),
+			hash => $md5,
+			hash_type => "MD5",
+			mime_type => $media_info->{mime_type},
+			copies => [$copy],
+		});
+		$install->set_value( "files", [
+			@{$install->value( "files")},
+			$file,
+		]);
+		$install->set_main( $file );
+
+		# add icon
+		if( $epmfilename =~ m#^static/(images/epm/.*)# )
+		{
+			$epm->set_value( "icon", $1 );
+			my $icon = $repo->dataset( "document" )->make_dataobj({
+				_parent => $epm,
+				content => "coverimage",
+				main => $epmfilename,
+				files => [],
+				format => "image",
+			});
+			$icon->set_value( "files", [
+				$repo->dataset( "file" )->make_dataobj({
+					_parent => $icon,
+					filename => $epmfilename,
+					filesize => length($data),
+					hash => $md5,
+					hash_type => "MD5",
+					mime_type => $media_info->{mime_type},
+					copies => [$copy],
+				})
+			]);
+			$epm->set_value( "documents", [
+				@{$epm->value( "documents" )},
+				$icon,
+			]);
+		}
+	}
+
+	&write_epmi($repo, $epm);
+	if($created)
+	{
+		print "\n$id.epmi was created using a default template - please edit before building or publishing an EPM.\n";
+	}
+	print <<END;
+
+To build an EPM for this version ($epdata->{version}) run:
+
+	tools/epm link_lib $id
+	$0 build_epm ${\($repo->id())} $id
+
+To publish this version ($epdata->{version}) run:
+
+	tools/epm link_lib $id
+	$0 publish ${\($repo->id())} $id
+
+END
 }
 
-for( keys %$epdata )
+sub action_build_epm
 {
-	delete $epdata->{$_} unless defined $epdata->{$_};
+	my ($repo,$id) = @_;
+
+	my $epm = EPrints::DataObj::EPM->new($repo, $id);
+	unless(defined $epm)
+	{
+		die "Could not open $id.epmi - did you run '$0 build_epmi ${\($repo->id)} $id'?\n";
+	}
+
+	foreach my $doc ( @{ $epm->value( "documents" ) } )
+	{
+		foreach my $file ( @{ $doc->value( "files" ) } )
+		{
+			# check file exists
+			my $epmfilepath = "$LIB_PATH/" . $file->value("filename");
+			unless(-f $epmfilepath)
+			{
+				die "Could not find $epmfilepath - did you run 'tools/epm link_lib $id'?\n"
+			}
+		}
+
+	}
+
+
+	&write_epm($repo, $epm);
 }
 
-$epm = EPrints::DataObj::EPM->new_from_data( $repo, $epdata, $repo->dataset( "epm" ) );
-die "Could not create DataObj::EPM for $epmid" unless defined $epm;
-
-# create epmi stub
-if( open( my $fh, ">$epm_file" ) )
+sub action_publish
 {
-	$epm->serialise( $fh );
-	close($fh);
+	my ($repo,$id) = @_;
+
+	die "Placeholder only\n";
 }
 
-if( $opt_verbose )
+sub write_epmi
 {
-	print "Wrote $epm_file\n";
-	$epm->serialise( *STDOUT );
+	my($repo, $epm) = @_;
+	my $filename = $epm->epm_dir . "/" . $epm->id . ".epmi";
+	if(open(my $fh, ">$filename"))
+	{
+		$epm->serialise( $fh, 0 );
+		close($fh);
+		print "\nWrote $filename\n";
+	}
+}
+
+sub write_epm
+{
+	my($repo, $epm) = @_;
+
+	my $pkg_cache = $repo->config( "base_path" ) . "/var/cache/epm";
+	EPrints->system->mkdir( $pkg_cache )
+		or die "Error creating directory $pkg_cache: $!";
+
+	my $filename = sprintf("%s/%s-%s.epm",
+		$pkg_cache,
+		$epm->value( "epmid" ),
+		$epm->value( "version" )
+	);
+
+	if(open(my $fh, ">$filename"))
+	{
+		$epm->serialise( $fh, 1 );
+		close($fh);
+		print "\nWrote $filename\n";
+	}
 }

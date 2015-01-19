@@ -1,26 +1,31 @@
 gitaar
 ======
 
-"git submodule" is a useful way to pull/push updates to a bazaar module in a development or deployment enviroment:
+Build and publish EPrints Package Manager (EPM) packages from the command line.
 
 ````
 $ cd /opt/eprints3/lib/epm
 $ git submodule add git@github.com:eprintsug/bootstrap.git
-````
 
-...however, the tools/epm utility bundled with EPrints won't work unless you maintain a .epmi file in your git repository too:
+# can't enable package without lib/epm/bootstrap/bootstrap.epmi
+$ tools/epm link_lib bootstrap 
+Error! 'bootstrap' is not installed or is an invalid epm identifier
 
-````
-$ cd /opt/eprints3
-$ tools/epm link_lib bootstrap # this fails unless there is a lib/epm/bootstrap/bootstrap.epmi
-````
+# generate bootstrap.epmi
+$ gitaar/gitaar build_epmi foo bootstrap
+Wrote /opt/eprints3/lib/epm/bootstrap/bootstrap.epmi
+$ tools/epm link_lib
+/opt/eprints3/lib/lang/en/phrases/bootstrap.xml
+/opt/eprints3/lib/themes/bootstrap/templates/default.xml
+/opt/eprints3/lib/themes/bootstrap/static/bootstrap_assets/Scripts/admin_menus.js
+[...]
+$ tools/epm enable foo bootstrap
+Message! Repository configuration reloaded!
 
-gitaar is a simple script to build a stub .epmi:
+# to create a distributable EPM you can either use the UI or:
+$ gitaar/gitaar build_epm foo bootstrap
+Wrote /opt/eprints3/var/cache/epm/bootstrap-1.0.0.epm
 
-````
-$ cd /opt/eprints3
-$ git submodule add git@github.com:eprintsug/gitaar.git
-$ gitaar/gitaar myrepo bootstrap
-$ tools/epm link_lib bootstrap
-$ tools/epm enable myrepo bootstrap
+# to publish your EPM to the EPrints Bazaar you can either use the UI or:
+$ gitaar/gitaar publish foo bootstrap
 ````
