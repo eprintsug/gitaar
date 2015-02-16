@@ -107,6 +107,9 @@ sub action_build_epmi
 	my @manifest;
 	find(sub{push @manifest, $File::Find::name if $File::Find::dir ne $EPM_PATH && -f $_}, $EPM_PATH);
 
+	# ignore git files
+	@manifest = grep { $_ !~ m|/\.git/| } @manifest;
+
 	my $install = $repo->dataset( "document" )->make_dataobj({
 		_parent => $epm,
 		content => "install",
