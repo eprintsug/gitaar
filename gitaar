@@ -100,91 +100,34 @@ sub action_build_epmi
 	{
 		$epdata->{$_} = EPrints::Utils::get_input( $REGEXP_ANY, $_, $epdata->{$_});
 	}
-		
-	$epm = EPrints::DataObj::EPM->new_from_data($repo, $epdata);
 
-	# read files from $EPM_PATH
+	# read files from $EPM_PATH (<base_path>/lib/epm)
 	my @manifest;
 	find(sub{push @manifest, $File::Find::name if $File::Find::dir ne $EPM_PATH && -f $_}, $EPM_PATH);
 
-	# ignore git files
-	@manifest = grep { $_ !~ m|/\.git/| } @manifest;
-
-	my $install = $repo->dataset( "document" )->make_dataobj({
-		_parent => $epm,
-		content => "install",
-		format => "other",
-		files => [],
-	});
-	$epm->set_value( "documents", [ $install ]);
-
-	foreach my $filename (sort @manifest)
+	# run link_lib (needs at least an epmi stub)
+	if( $created )
 	{
-		use bytes;
-		open(my $fh, "<", $filename) or die "Error opening $filename: $!";
-		sysread($fh, my $data, -s $fh);
-		close($fh);
-		my $md5 = Digest::MD5::md5_hex( $data );
-	
-		$repo->run_trigger( EPrints::Const::EP_TRIGGER_MEDIA_INFO,
-			filename => basename($filename),
-			filepath => $filename,
-			epdata => my $media_info = {},
-		);
+		$epm = EPrints::DataObj::EPM->new_from_data($repo, $epdata);
+		&write_epmi($repo, $epm);
+	}
+	my $command = $repo->config( "base_path" ) . "/tools/epm link_lib $id";
+	print "\nRunning $command\n";
+	my $rc = 0xffff & system $command;
+	if( $rc != 0 )
+	{
+		die "$command failed";
+	}
 
-		my $copy = { pluginid => "Storage::EPM", sourceid => $filename };
-
-		# fixup filename
-		my $epmfilename = $filename;
-		unless( $epmfilename =~ s|$EPM_PATH/lib/|| )
+	# prepare manifest - new_from_manifest() will prefix files with <base_path>/lib
+	for( @manifest )
+	{
+		unless( s|$EPM_PATH/lib/|| )
 		{
-			$epmfilename =~ s|$LIB_PATH/||;
-		}
-
-		my $file = $repo->dataset( "file" )->make_dataobj({
-			_parent => $install,
-			datasetid => "document",
-			filename => $epmfilename,
-			filesize => length($data),
-			hash => $md5,
-			hash_type => "MD5",
-			mime_type => $media_info->{mime_type},
-			copies => [$copy],
-		});
-		$install->set_value( "files", [
-			@{$install->value( "files")},
-			$file,
-		]);
-		$install->set_main( $file );
-
-		# add icon
-		if( $epmfilename =~ m#^static/(images/epm/.*)# )
-		{
-			$epm->set_value( "icon", $1 );
-			my $icon = $repo->dataset( "document" )->make_dataobj({
-				_parent => $epm,
-				content => "coverimage",
-				main => $epmfilename,
-				files => [],
-				format => "image",
-			});
-			$icon->set_value( "files", [
-				$repo->dataset( "file" )->make_dataobj({
-					_parent => $icon,
-					filename => $epmfilename,
-					filesize => length($data),
-					hash => $md5,
-					hash_type => "MD5",
-					mime_type => $media_info->{mime_type},
-					copies => [$copy],
-				})
-			]);
-			$epm->set_value( "documents", [
-				@{$epm->value( "documents" )},
-				$icon,
-			]);
+			s|$LIB_PATH/||;
 		}
 	}
+	$epm = EPrints::DataObj::EPM->new_from_manifest( $repo, $epdata, @manifest );
 
 	&write_epmi($repo, $epm);
 	if($created)
