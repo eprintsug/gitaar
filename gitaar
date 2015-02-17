@@ -51,6 +51,7 @@ if( !-d $EPM_PATH )
 	die "'$epmid' is not a valid epm identifier - $EPM_PATH does not exist";
 }
 
+my $REGEXP_HOSTNAME_FULL = '^[a-z0-9-]+(\.[a-z0-9-]+)*$';
 my $REGEXP_ANY = '^.*$';
 
 my %STUB = (
@@ -181,7 +182,45 @@ sub action_publish
 {
 	my ($repo,$id) = @_;
 
-	die "Placeholder only\n";
+	my $epm = EPrints::DataObj::EPM->new($repo, $id);
+	unless(defined $epm)
+	{
+		die "Could not open $id.epmi - did you run '$0 build_epmi ${\($repo->id)} $id'?\n";
+	}
+	$epm->rebuild; # make sure we send latest versions of files
+
+	print "Please enter credentials for publishing:\n\n";
+
+	my $source = "http://bazaar.eprints.org/";
+	$source = EPrints::Utils::get_input($REGEXP_HOSTNAME_FULL, 'hostname', $source);
+	my $username = EPrints::Utils::get_input($REGEXP_ANY, "username");
+	my $password = EPrints::Utils::get_input_hidden('^.*$', "password");
+
+	print "\n";
+
+	# locate the SWORD deposit endpoint
+	my $ua = LWP::UserAgent->new;
+	my $r = $ua->get( $source );
+	if(
+		$r->content !~ /(<link[^>]+rel=["']SwordDeposit[^>]+)>/i ||
+		$1 !~ /href=["']([^"']+)/
+	  )
+	{
+		die "Could not find SwordDeposit endpoint for $source";
+	}
+	$source = $1;
+
+	my $handler = EPrints::CLIProcessor->new(
+		session => $repo,
+	);
+
+	print "Publishing to $source\n\n";
+	my $uri = $epm->publish( $handler, $source, username => $username, password => $password );
+
+	if( defined $uri )
+	{
+		print "Published: $uri\n";
+	}
 }
 
 sub write_epmi
